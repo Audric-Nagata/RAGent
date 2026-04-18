@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ragent-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  ragent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragent-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # These variables will be pulled from your local .env file or host environment
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN}
+      # Point Qdrant to the docker service name instead of localhost
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=ragent-chunks
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:
+    name: ragent-qdrant-data

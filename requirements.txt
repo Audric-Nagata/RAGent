@@ -1,0 +1,31 @@
+# ── Core ──────────────────────────────────────────────────────────
+pydantic>=2.0
+pydantic-settings>=2.0
+python-dotenv
+
+# ── Agents (Pydantic AI + providers) ─────────────────────────────
+pydantic-ai
+groq
+google-genai
+aiosqlite
+llama-index-core
+
+# ── MCP ──────────────────────────────────────────────────────────
+mcp
+qdrant-client
+
+# ── API / Streaming ──────────────────────────────────────────────
+fastapi
+uvicorn
+
+# ── HTTP / External ──────────────────────────────────────────────
+httpx
+
+# ── Observability ────────────────────────────────────────────────
+logfire
+logfire[fastapi]
+
+# ── Document Parsing ─────────────────────────────────────────────
+pypdf
+python-docx
+beautifulsoup4
