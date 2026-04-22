@@ -33,13 +33,13 @@ import asyncio
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.dependencies import AppDeps, DepsDep
 from api.sse import make_stream_response
-from models.documents import RawDocument, DocumentType
+from models.documents import DocumentType
 from models.results import PipelineResult
 
 logger = logging.getLogger(__name__)
@@ -53,28 +53,6 @@ _stream_queues: dict[str, asyncio.Queue[Any]] = {}
 
 
 # ── Request / response schemas ────────────────────────────────────────────────
-
-class ProcessRequest(BaseModel):
-    """Request body for POST /process and POST /process/async."""
-
-    content: str = Field(
-        ...,
-        min_length=1,
-        description="Full text content of the document to process.",
-    )
-    source: str | None = Field(
-        default=None,
-        description="Optional source identifier (filename, URL, etc.).",
-    )
-    document_type: DocumentType = Field(
-        default=DocumentType.UNKNOWN,
-        description="Hint for the document type; the intake agent will verify.",
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Arbitrary key-value metadata attached to the document.",
-    )
-
 
 class ProcessAccepted(BaseModel):
     """Response body for POST /process/async."""
@@ -120,8 +98,10 @@ async def health(deps: DepsDep) -> HealthResponse:
     tags=["pipeline"],
 )
 async def process_document(
-    body: ProcessRequest,
     deps: DepsDep,
+    file: UploadFile = File(...),
+    document_type: str = Form("unknown"),
+    metadata: str = Form("{}"),
 ) -> StreamingResponse:
     """Process a document and stream :class:`~models.stream.StreamChunk` events.
 
@@ -134,30 +114,34 @@ async def process_document(
 
     Events in order:
 
-    1. ``progress`` — classifying (10%)
-    2. ``progress`` — retrieving (40%)
-    3. ``progress`` — extracting (70%)
-    4. ``progress`` — done (100%)
-    5. ``complete`` — :class:`~models.results.PipelineResult` payload
+    1. ``progress`` — extracting_text (5%)
+    2. ``progress`` — classifying (10%)
+    3. ``progress`` — retrieving (40%)
+    4. ``progress`` — extracting (70%)
+    5. ``progress`` — done (100%)
+    6. ``complete`` — :class:`~models.results.PipelineResult` payload
 
     Args:
-        body: Document content and optional metadata.
         deps: Injected :class:`~api.dependencies.AppDeps`.
+        file: Uploaded PDF or DOCX file.
+        document_type: Hint for the document type.
+        metadata: JSON string for arbitrary metadata.
 
     Returns:
         A ``text/event-stream`` ``StreamingResponse``.
     """
-    doc = RawDocument(
-        content=body.content,
-        source=body.source,
-        document_type=body.document_type,
-        metadata=body.metadata,
-    )
+    file_bytes = await file.read()
+    filename = file.filename or "upload"
+    try:
+        meta_dict = json.loads(metadata)
+    except json.JSONDecodeError:
+        meta_dict = {}
+
     logger.info(
         "Streaming pipeline started",
-        extra={"document_id": doc.id, "request_id": deps.request_id},
+        extra={"filename": filename, "request_id": deps.request_id},
     )
-    return make_stream_response(doc, deps)
+    return make_stream_response(file_bytes, filename, document_type, meta_dict, deps)
 
 
 # ── Async (fire-and-forget) process ──────────────────────────────────────────
@@ -170,9 +154,11 @@ async def process_document(
     tags=["pipeline"],
 )
 async def process_document_async(
-    body: ProcessRequest,
     background_tasks: BackgroundTasks,
     deps: DepsDep,
+    file: UploadFile = File(...),
+    document_type: str = Form("unknown"),
+    metadata: str = Form("{}"),
 ) -> ProcessAccepted:
     """Submit a document for background processing and return immediately.
 
@@ -180,19 +166,21 @@ async def process_document_async(
     ``GET /results/{request_id}``.
 
     Args:
-        body:             Document content and optional metadata.
         background_tasks: FastAPI ``BackgroundTasks`` for fire-and-forget.
         deps:             Injected :class:`~api.dependencies.AppDeps`.
+        file: Uploaded PDF or DOCX file.
+        document_type: Hint for the document type.
+        metadata: JSON string for arbitrary metadata.
 
     Returns:
         A :class:`ProcessAccepted` with ``request_id`` and ``document_id``.
     """
-    doc = RawDocument(
-        content=body.content,
-        source=body.source,
-        document_type=body.document_type,
-        metadata=body.metadata,
-    )
+    file_bytes = await file.read()
+    filename = file.filename or "upload"
+    try:
+        meta_dict = json.loads(metadata)
+    except json.JSONDecodeError:
+        meta_dict = {}
 
     request_id = deps.request_id
     _results[request_id] = None  # Mark as in-progress
@@ -202,7 +190,7 @@ async def process_document_async(
         _stream_queues[request_id] = queue
         from agents.orchestrator import run_pipeline
 
-        await run_pipeline(doc, queue, deps)
+        await run_pipeline(file_bytes, filename, document_type, meta_dict, queue, deps)
 
         # Drain the queue to find the final result
         while not queue.empty():
@@ -223,11 +211,11 @@ async def process_document_async(
 
     logger.info(
         "Async pipeline accepted",
-        extra={"document_id": doc.id, "request_id": request_id},
+        extra={"filename": filename, "request_id": request_id},
     )
     return ProcessAccepted(
         request_id=request_id,
-        document_id=doc.id,
+        document_id="generated-post-extraction",
     )
 
 

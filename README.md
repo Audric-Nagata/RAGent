@@ -8,21 +8,21 @@
 
 ## What is RAGent?
 
-RAGent ingests unstructured documents (invoices, contracts, reports, receipts), runs a three-stage multi-agent pipeline backed by free cloud LLMs, and streams fully-typed, validated JSON extractions to any frontend via Server-Sent Events.
+RAGent ingests unstructured documents (invoices, contracts, reports, receipts), runs a three-stage multi-agent pipeline backed by open-source models on HuggingFace, and streams fully-typed, validated JSON extractions to any frontend via Server-Sent Events.
 
 Every external tool — the vector database, document store, and web search — is exposed through **MCP (Model Context Protocol) servers**, keeping agents cleanly decoupled from infrastructure.
 
-**Monthly LLM cost: $0.** All models are free-tier cloud APIs.
+**Monthly cloud API cost: $0.** All hosted models use free-tier APIs; embeddings run 100% locally.
 
 ---
 
-## Free LLM Services
+## Model Stack
 
-| Service | Model | Agent Role | Free Limit |
+| Provider | Model | Agent Role | Notes |
 |---|---|---|---|
-| **Google AI Studio** | `gemini-2.0-flash` | RAG synthesis + structured extraction | 15 RPM / 1 M TPD |
-| **Groq** | `llama-3.3-70b-versatile` | Document classification & routing | 14,400 RPD |
-| **Gemini Embeddings** | `text-embedding-004` | Vector embedding (768-dim) | 1,500 RPM |
+| **HuggingFace Serverless** | `mistralai/Ministral-3-3B-Reasoning-2512-GGUF` | RAG synthesis + structured extraction | Free serverless inference |
+| **Groq** | `llama-3.3-70b-versatile` | Document classification & routing | 14,400 RPD free tier |
+| **Local (sentence-transformers)** | `Qwen/Qwen3-Embedding-0.6B` | Vector embedding (1024-dim) | Runs fully offline, no API key needed |
 
 ---
 
@@ -43,7 +43,7 @@ Every external tool — the vector database, document store, and web search — 
                  │          │
         ┌────────▼───┐  ┌───▼──────────────┐
         │   Intake   │  │  RAG + Extractor  │
-        │   Agent    │  │  Agents (Gemini)  │
+        │   Agent    │  │    Agents (HF)    │
         │   (Groq)   │  └───────┬───────────┘
         └────────┬───┘          │
                  │              │
@@ -70,14 +70,14 @@ RawDocument
     │   • Classifies document type (invoice/contract/report/receipt/unknown)
     │   • Outputs: IntakeResult (type, confidence, RAG query)
     │
-    ▼ Stage 2 — RAG Agent (Gemini)
-    │   • Embeds the query
+    ▼ Stage 2 — RAG Agent (HuggingFace Ministral)
+    │   • Embeds the query (local Qwen3-Embedding-0.6B)
     │   • Retrieves top-k chunks  →  rag/retriever.py  →  vector-db MCP
     │   • Optionally calls web-search MCP (Tavily) as fallback
     │   • Synthesises a grounding context paragraph
     │   • Outputs: RAGResult (context, retrieved_chunks, confidence)
     │
-    ▼ Stage 3 — Extractor Agent (Gemini)
+    ▼ Stage 3 — Extractor Agent (HuggingFace Ministral)
         • Routes to the correct typed sub-agent for the document type
         • Extracts all structured fields using RAG context as grounding
         • Outputs: InvoiceData | ContractData | ReportData | ReceiptData | GenericExtraction
@@ -110,7 +110,7 @@ RAGent/
 │
 ├── rag/                           # RAG pipeline layer
 │   ├── chunker.py                 # Recursive sentence-aware text splitter
-│   ├── embedder.py                # Gemini text-embedding-004 (async, retried)
+│   ├── embedder.py                # Qwen3-Embedding-0.6B (local, async via asyncio.to_thread)
 │   └── retriever.py               # Qdrant retrieval + RRF multi-query reranking
 │
 ├── models/                        # All Pydantic models (strict)
@@ -127,7 +127,7 @@ RAGent/
 ├── config.py                      # pydantic-settings — strict env validation
 ├── main.py                        # FastAPI app + asynccontextmanager lifespan (MCP startup)
 ├── pyproject.toml                 # Project metadata, mypy strict config
-└── requirements.txt               # All dependencies
+└── requirements.txt               # All dependencies (sentence-transformers, torch, pydantic-ai[huggingface], ...)
 ```
 
 ---
@@ -153,7 +153,7 @@ Get **free** keys from:
 
 | Key | Where to get it |
 |---|---|
-| `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) → Get API key |
+| `HF_TOKEN` | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → New token (read access) |
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) → API Keys |
 | `TAVILY_API_KEY` | [app.tavily.com](https://app.tavily.com) → API (optional — web search degrades gracefully without it) |
 | `LOGFIRE_TOKEN` | [logfire.pydantic.dev](https://logfire.pydantic.dev) → (optional — tracing) |
@@ -181,8 +181,10 @@ pip install -r requirements.txt
 
 ### 3. Create `.env`
 ```env
-# Required
-GEMINI_API_KEY=AIza...
+# Required — HuggingFace token (for Ministral inference)
+HF_TOKEN=hf_...
+
+# Required — Groq (intake classification)
 GROQ_API_KEY=gsk_...
 
 # Optional — web search (Tavily)
@@ -524,14 +526,14 @@ All settings are loaded from `.env` via `pydantic-settings`.
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `GEMINI_API_KEY` | `""` | ✅ Yes | Google AI Studio key for embedding + extraction |
+| `HF_TOKEN` | `""` | ✅ Yes | HuggingFace token for Ministral inference via Serverless API |
 | `GROQ_API_KEY` | `""` | ✅ Yes | Groq key for intake classification |
 | `TAVILY_API_KEY` | `""` | ❌ No | Web search fallback (returns empty if unset) |
 | `LOGFIRE_TOKEN` | `""` | ❌ No | Pydantic Logfire tracing token |
 | `QDRANT_URL` | `http://localhost:6333` | ❌ No | Qdrant instance URL |
 | `QDRANT_API_KEY` | `null` | ❌ No | Qdrant API key (for cloud instances) |
 | `QDRANT_COLLECTION` | `ragent-chunks` | ❌ No | Qdrant collection name |
-| `EMBEDDING_DIMENSION` | `768` | ❌ No | Must match the model (768 for text-embedding-004) |
+| `EMBEDDING_DIMENSION` | `1024` | ❌ No | Must match the model (1024 for Qwen3-Embedding-0.6B) |
 
 ---
 
@@ -541,8 +543,8 @@ When `LOGFIRE_TOKEN` is set, every pipeline run traces:
 
 - `orchestrator.run_pipeline` — full end-to-end span
 - `intake_agent.run` — Groq classification span
-- `intake.ingest_document` — chunking + embedding span
-- `rag_agent.run` — Gemini retrieval span
+- `intake.ingest_document` — chunking + embedding span (Qwen3-Embedding-0.6B)
+- `rag_agent.run` — Ministral retrieval span
 - `rag_agent.retrieve_chunks` — MCP vector-db call
 - `rag_agent.web_search` — Tavily fallback call
 - `extractor_agent.run` — Gemini extraction span
@@ -560,7 +562,8 @@ View traces at **https://logfire.pydantic.dev**
 | Agents | Pydantic AI (multi-agent, typed `output_type`, `RunContext`) |
 | Integration | Model Context Protocol (MCP) — stdio subprocess servers |
 | Validation | Pydantic v2 — all LLM outputs, all MCP I/O |
-| RAG | Custom chunker + Gemini embedder + Qdrant + RRF reranking |
+| RAG | Custom chunker + Qwen3-Embedding-0.6B (local) + Qdrant + RRF reranking |
+| LLM (agents) | Groq `llama-3.3-70b-versatile` (intake) · HuggingFace `Ministral-3B` (RAG + extraction) |
 | API | FastAPI + SSE (`StreamingResponse`) |
 | Observability | Logfire (auto-instrumented) |
 | Type checking | mypy `--strict` |

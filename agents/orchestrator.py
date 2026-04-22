@@ -7,9 +7,9 @@ concurrency and an ``asyncio.Queue`` for backpressure-safe streaming.
 Pipeline stages
 ---------------
 1. **Intake agent** (Groq)   — classifies document, gates further processing.
-2. **RAG agent**   (Gemini)  — retrieves context from vector DB (concurrent
+2. **RAG agent**   (Mistral)  — retrieves context from vector DB (concurrent
                                with step 1 output available).
-3. **Extractor agent** (Gemini) — structured field extraction using RAG context.
+3. **Extractor agent** (Mistral) — structured field extraction using RAG context.
 
 The queue accepts :class:`~models.stream.StreamChunk` payloads and is
 consumed by the SSE emitter in ``api/sse.py``.  A bounded ``maxsize=10``
@@ -80,7 +80,10 @@ def _validate_extraction(result: PipelineResult) -> ValidationReport:
 # ── Public pipeline entry-point ───────────────────────────────────────────────
 
 async def run_pipeline(
-    doc: RawDocument,
+    file_bytes: bytes,
+    filename: str,
+    doc_type: str,
+    metadata: dict,
     queue: asyncio.Queue[StreamChunk],  # type: ignore[type-arg]
     deps: AgentDeps,
 ) -> None:
@@ -91,11 +94,15 @@ async def run_pipeline(
     final ``complete`` or ``error`` chunk when done.
 
     Args:
-        doc:   The raw document to process.
+        file_bytes: The raw document bytes.
+        filename: Original file name.
+        doc_type: Document type hint.
+        metadata: External metadata map.
         queue: Bounded asyncio Queue consumed by the SSE emitter.
         deps:  Shared agent dependencies (MCP client, user/request IDs).
 
     Queue events emitted (in order):
+        - ``progress`` — extracting_text
         - ``progress`` — classifying
         - ``progress`` — retrieving
         - ``progress`` — extracting
@@ -103,14 +110,39 @@ async def run_pipeline(
         - ``error``     — on any unhandled exception
     """
     start_ms = time.monotonic() * 1000
+    
+    from utils.document_parser import parse_document
+    from models.documents import DocumentType
+    
+    try:
+        document_enum = DocumentType(doc_type)
+    except ValueError:
+        document_enum = DocumentType.UNKNOWN
 
     with logfire.span(
         "orchestrator.run_pipeline",
-        document_id=doc.id,
+        filename=filename,
         user_id=deps.user_id,
         request_id=deps.request_id,
     ):
         try:
+            # ── Stage 0: Text Extraction ──────────────────────────────────────
+            await _emit_progress(
+                queue, stage="extracting_text",
+                message="Extracting document text...", percentage=5.0,
+            )
+            
+            content = await parse_document(file_bytes, filename)
+            
+            doc = RawDocument(
+                content=content,
+                source=filename,
+                document_type=document_enum,
+                metadata=metadata or {},
+            )
+            
+            logfire.info("Successfully extracted document text", document_id=doc.id)
+
             # ── Stage 1: Intake (serial — gates everything else) ──────────────
             await _emit_progress(
                 queue, stage="classifying",

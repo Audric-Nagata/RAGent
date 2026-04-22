@@ -35,7 +35,6 @@ from fastapi.responses import StreamingResponse
 
 from agents.orchestrator import run_pipeline
 from api.dependencies import AppDeps
-from models.documents import RawDocument
 from models.results import PipelineResult
 from models.stream import StreamChunk
 
@@ -47,13 +46,19 @@ _QUEUE_MAX: int = 10
 # ── Core SSE generator ────────────────────────────────────────────────────────
 
 async def _event_generator(
-    doc: RawDocument,
+    file_bytes: bytes,
+    filename: str,
+    doc_type: str,
+    metadata: dict,
     deps: AppDeps,
 ) -> AsyncGenerator[str, None]:
     """Async generator that drives the pipeline and yields SSE event strings.
 
     Args:
-        doc:  The raw document to process.
+        file_bytes: The raw document bytes.
+        filename: Original filename.
+        doc_type: The document type hint.
+        metadata: Metadata map.
         deps: Populated ``AppDeps`` carrying the MCP client and IDs.
 
     Yields:
@@ -64,7 +69,7 @@ async def _event_generator(
 
     # Fire off the pipeline as a background task
     pipeline_task = asyncio.create_task(
-        run_pipeline(doc, queue, deps),
+        run_pipeline(file_bytes, filename, doc_type, metadata, queue, deps),
         name=f"pipeline-{deps.request_id}",
     )
 
@@ -122,7 +127,10 @@ def _format_sse(chunk: StreamChunk[Any]) -> str:
 # ── Public streaming response factory ────────────────────────────────────────
 
 def make_stream_response(
-    doc: RawDocument,
+    file_bytes: bytes,
+    filename: str,
+    doc_type: str,
+    metadata: dict,
     deps: AppDeps,
 ) -> StreamingResponse:
     """Create a :class:`fastapi.responses.StreamingResponse` for a pipeline run.
@@ -131,14 +139,17 @@ def make_stream_response(
     async generator to the FastAPI streaming machinery.
 
     Args:
-        doc:  The raw document to process.
+        file_bytes: Original file bytes.
+        filename: Name of the uploaded file.
+        doc_type: Expected document type.
+        metadata: Meta dictionary.
         deps: Populated ``AppDeps`` for this request.
 
     Returns:
         A ``StreamingResponse`` with ``Content-Type: text/event-stream``.
     """
     return StreamingResponse(
-        _event_generator(doc, deps),
+        _event_generator(file_bytes, filename, doc_type, metadata, deps),
         media_type="text/event-stream",
         headers={
             # Prevent proxies/browsers from buffering the stream

@@ -17,9 +17,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── LLM API Keys ──────────────────────────────────────────────
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY")
-    groq_api_key: str = os.getenv("GROQ_API_KEY")
+    # ── LLM API Keys ──────────────────────────────────────────
+    hf_token: str = os.getenv("HF_TOKEN", "")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
 
     # ── Observability ─────────────────────────────────────────────
     logfire_token: str = os.getenv("LOGFIRE_TOKEN")
@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "ragent-chunks"
 
-    # ── Embedding ─────────────────────────────────────────────────
-    embedding_dimension: int = 768  # Gemini text-embedding-004
+    # ── Embedding ──────────────────────────────────────────────────
+    embedding_dimension: int = 1024  # Qwen/Qwen3-Embedding-0.6B
 
     # ── Tavily Web Search ─────────────────────────────────────────
     tavily_api_key: str = os.getenv("TAVILY_API_KEY")

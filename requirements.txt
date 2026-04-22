@@ -5,8 +5,8 @@ python-dotenv
 
 # ── Agents (Pydantic AI + providers) ─────────────────────────────
 pydantic-ai
+pydantic-ai[huggingface]
 groq
-google-genai
 aiosqlite
 llama-index-core
 
@@ -21,11 +21,15 @@ uvicorn
 # ── HTTP / External ──────────────────────────────────────────────
 httpx
 
+# ── Embeddings (local, HuggingFace) ────────────────────────────────
+sentence-transformers>=3.0
+torch
+
 # ── Observability ────────────────────────────────────────────────
 logfire
 logfire[fastapi]
 
 # ── Document Parsing ─────────────────────────────────────────────
-pypdf
+pymupdf4llm
 python-docx
 beautifulsoup4

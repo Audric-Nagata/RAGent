@@ -1,6 +1,6 @@
 """RAG agent — retrieves relevant chunks and synthesises context.
 
-Model : Google AI Studio  ``gemini-2.0-flash``  (free, 15 RPM / 1 M TPD)
+Model : HuggingFace  ``mistralai/Ministral-3-3B-Reasoning-2512-GGUF``
 Output: :class:`~models.results.RAGResult`
 
 The RAG agent is the *second* stage of the pipeline.  It receives the
@@ -28,7 +28,7 @@ load_dotenv()
 
 import logfire
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.gemini import GeminiModel
+from pydantic_ai.models.huggingface import HuggingFaceModel
 
 from agents.base import AgentDeps
 from models.results import RAGResult
@@ -36,7 +36,7 @@ from rag.retriever import retrieve, retrieve_and_rerank
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
-_model = GeminiModel("gemini-2.0-flash")
+_model = HuggingFaceModel("mistralai/Ministral-3-3B-Reasoning-2512-GGUF")
 
 # ── Agent definition ──────────────────────────────────────────────────────────
 

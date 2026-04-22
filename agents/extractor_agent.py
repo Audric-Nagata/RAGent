@@ -1,6 +1,6 @@
 """Extractor agent — structured field extraction from documents.
 
-Model : Google AI Studio  ``gemini-2.0-flash``  (free, 15 RPM / 1 M TPD)
+Model : HuggingFace  ``mistralai/Ministral-3-3B-Reasoning-2512-GGUF``
 Output: :class:`~models.extractions.ExtractionResult`  (discriminated union)
 
 The extractor agent is the *third and final* stage of the pipeline.  It
@@ -23,7 +23,7 @@ load_dotenv()
 
 import logfire
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.gemini import GeminiModel
+from pydantic_ai.models.huggingface import HuggingFaceModel
 
 from agents.base import AgentDeps
 from models.documents import DocumentType
@@ -40,7 +40,7 @@ from models.results import IntakeResult, RAGResult
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
-_model = GeminiModel("gemini-2.0-flash")
+_model = HuggingFaceModel("mistralai/Ministral-3-3B-Reasoning-2512-GGUF")
 
 # ── Per-type agents (all share the same model, different system prompts) ───────
 

@@ -32,7 +32,6 @@ from mcp_server.schemas import (
 # Use stderr for logging — stdout is reserved for the MCP JSON-RPC wire protocol
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
-EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
 
 app = Server("vector-db")
 
@@ -40,7 +39,7 @@ app = Server("vector-db")
 
 _client: AsyncQdrantClient | None = None
 _collection: str = "ragent-chunks"
-_dimension: int = 768
+_dimension: int = 1024
 
 
 def _get_client() -> AsyncQdrantClient:
@@ -207,24 +206,10 @@ async def call_tool(
             raise ValueError(f"Unknown tool: {name}")
 
 
-# ── Embedding helper (placeholder until Gemini integrations wired) ─
+# ── Embedding helper (uses Qwen/Qwen3-Embedding-0.6B via sentence-transformers) ─
 async def _get_embedding(text: str) -> list[float]:
-    settings = Settings()
-
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            EMBED_URL,
-            params={"key": settings.gemini_api_key},
-            json={
-                "model": "models/text-embedding-004",
-                "content": {
-                    "parts": [{"text": text}]
-                },
-            },
-        )
-        r.raise_for_status()
-        return r.json()["embedding"]["values"]
-    return _hash_embedding(text, dimension=_get_client_dimension())
+    """Embed text using the local Qwen3-Embedding-0.6B model."""
+    return await embed_single(text)
 
 
 def _get_client_dimension() -> int:

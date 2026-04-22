@@ -1,30 +1,26 @@
-"""Document embedder — generates embedding vectors via Gemini text-embedding-004.
+"""Document embedder — generates embedding vectors via Qwen/Qwen3-Embedding-0.6B.
 
-Uses Google AI Studio's free ``text-embedding-004`` model (768 dimensions).
-All requests are made with ``httpx.AsyncClient`` so the embedder fits
-naturally into the async pipeline without blocking the event loop.
+Uses the HuggingFace ``Qwen/Qwen3-Embedding-0.6B`` model (1024 dimensions),
+loaded locally once at import time via ``sentence-transformers``.
 
-Rate-limit awareness
---------------------
-Gemini's free tier allows 1 500 RPM for embeddings.  For batch operations
-the embedder processes chunks **concurrently** using ``asyncio.gather`` with
-a configurable semaphore to avoid hammering the API.  Single-item calls are
-fire-and-forget.
+Async safety
+------------
+The ``SentenceTransformer.encode()`` call is synchronous (PyTorch CPU/GPU).
+To avoid blocking the event loop it is offloaded with ``asyncio.to_thread``.
 
-Retry logic
------------
-Transient 429 / 5xx errors are retried up to ``MAX_RETRIES`` times with
-exponential backoff (starting at 1 s, doubling each attempt).
+Batch embedding
+---------------
+Batch operations run chunks concurrently (up to ``DEFAULT_CONCURRENCY``
+workers) via ``asyncio.Semaphore`` + ``asyncio.gather``, exactly as before.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Sequence
 
-import httpx
+from sentence_transformers import SentenceTransformer
 
 from config import Settings
 from models.documents import EmbeddedChunk, ParsedChunk
@@ -33,85 +29,48 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta"
-    "/models/text-embedding-004:embedContent"
-)
+EMBED_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
+DEFAULT_CONCURRENCY: int = 8        # max simultaneous thread-pool tasks
+EMBEDDING_DIMENSION: int = 1024     # Qwen3-Embedding-0.6B default output dim
 
-MAX_RETRIES: int = 3
-BASE_RETRY_DELAY: float = 1.0       # seconds; doubles each retry
-DEFAULT_CONCURRENCY: int = 8        # max simultaneous embed requests
-EMBEDDING_DIMENSION: int = 768
+# ── Module-level singleton (loaded once) ──────────────────────────────────────
+
+_embed_model: SentenceTransformer = SentenceTransformer(
+    EMBED_MODEL_NAME,
+    tokenizer_kwargs={"padding_side": "left"},
+)
 
 
 # ── Core embedding function ───────────────────────────────────────────────────
 
 async def embed_text(
     text: str,
-    client: httpx.AsyncClient,
-    api_key: str,
+    *,
+    prompt_name: str | None = None,
 ) -> list[float]:
-    """Embed a single text string using Gemini text-embedding-004.
+    """Embed a single text string using Qwen/Qwen3-Embedding-0.6B.
 
-    Retries on rate-limit (429) and server errors (5xx) with exponential
-    backoff.
+    The synchronous ``SentenceTransformer.encode()`` call is offloaded to the
+    default thread-pool executor via ``asyncio.to_thread`` so the event loop
+    is never blocked.
 
     Args:
-        text:    The text to embed (max ~2 048 tokens).
-        client:  A shared ``httpx.AsyncClient`` instance.
-        api_key: Gemini API key from settings.
+        text:        The text to embed.
+        prompt_name: Optional prompt name (e.g. ``"query"`` for retrieval
+                     queries as recommended by the Qwen3-Embedding docs).
 
     Returns:
-        A list of 768 floats representing the embedding vector.
-
-    Raises:
-        httpx.HTTPStatusError: If all retries are exhausted.
-        ValueError:            If the API response is malformed.
+        A list of 1024 floats representing the embedding vector.
     """
-    payload = {
-        "model": "models/text-embedding-004",
-        "content": {"parts": [{"text": text}]},
-    }
+    def _encode() -> list[float]:
+        vec = _embed_model.encode(
+            text,
+            prompt_name=prompt_name,
+            normalize_embeddings=True,
+        )
+        return vec.tolist()
 
-    delay = BASE_RETRY_DELAY
-    last_exc: Exception | None = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = await client.post(
-                EMBED_URL,
-                params={"key": api_key},
-                json=payload,
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            values: list[float] = data["embedding"]["values"]
-            return values
-
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
-                logger.warning(
-                    "Embed request failed (status=%d), retry %d/%d in %.1fs",
-                    status, attempt, MAX_RETRIES, delay,
-                )
-                await asyncio.sleep(delay)
-                delay *= 2
-                last_exc = exc
-                continue
-            raise
-
-        except httpx.RequestError as exc:
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(delay)
-                delay *= 2
-                last_exc = exc
-                continue
-            raise
-
-    # Should never reach here, but satisfies mypy
-    raise RuntimeError("embed_text: all retries exhausted") from last_exc
+    return await asyncio.to_thread(_encode)
 
 
 # ── Batch embedding ───────────────────────────────────────────────────────────
@@ -123,25 +82,23 @@ async def embed_chunks(
 ) -> list[EmbeddedChunk]:
     """Embed a sequence of :class:`~models.documents.ParsedChunk` objects.
 
-    Runs embeddings concurrently (up to ``concurrency`` requests at a time)
-    using a shared ``httpx.AsyncClient`` and an ``asyncio.Semaphore``.
+    Runs embeddings concurrently (up to ``concurrency`` thread-pool tasks)
+    using an ``asyncio.Semaphore``.
 
     Args:
         chunks:      The chunks to embed. Order is preserved in the output.
-        concurrency: Max simultaneous requests (default 8, safe for free tier).
-        settings:    Optional pre-loaded settings; loaded from env if ``None``.
+        concurrency: Max simultaneous ``to_thread`` tasks (default 8).
+        settings:    Unused — kept for API compatibility.
 
     Returns:
         A list of :class:`~models.documents.EmbeddedChunk` objects in the
         same order as the input.
     """
-    cfg = settings or Settings()
-    api_key = cfg.gemini_api_key
     sem = asyncio.Semaphore(concurrency)
 
-    async def _embed_one(chunk: ParsedChunk, client: httpx.AsyncClient) -> EmbeddedChunk:
+    async def _embed_one(chunk: ParsedChunk) -> EmbeddedChunk:
         async with sem:
-            vector = await embed_text(chunk.text, client, api_key)
+            vector = await embed_text(chunk.text)
         return EmbeddedChunk(
             document_id=chunk.document_id,
             chunk_id=chunk.id,
@@ -151,9 +108,8 @@ async def embed_chunks(
             metadata=chunk.metadata,
         )
 
-    async with httpx.AsyncClient() as client:
-        tasks = [_embed_one(chunk, client) for chunk in chunks]
-        results = await asyncio.gather(*tasks)
+    tasks = [_embed_one(chunk) for chunk in chunks]
+    results = await asyncio.gather(*tasks)
 
     return list(results)
 
@@ -169,14 +125,12 @@ async def embed_single(
 
     Args:
         text:     The text to embed.
-        settings: Optional pre-loaded settings; loaded from env if ``None``.
+        settings: Unused — kept for API compatibility.
 
     Returns:
-        A 768-dimensional embedding vector.
+        A 1024-dimensional embedding vector.
     """
-    cfg = settings or Settings()
-    async with httpx.AsyncClient() as client:
-        return await embed_text(text, client, cfg.gemini_api_key)
+    return await embed_text(text, prompt_name="query")
 
 
 # ── Document-level convenience ────────────────────────────────────────────────
